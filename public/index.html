@@ -1,107 +1,42 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="utf-8"/>
   <title>Watch Together</title>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      background: #121212;
-      color: white;
-      text-align: center;
-      margin: 0;
-      padding: 0;
-    }
-    video {
-      width: 45%;
-      margin: 10px;
-      border: 2px solid white;
-      border-radius: 10px;
-    }
-    #controls {
-      margin: 15px;
-    }
-    input, button {
-      padding: 8px;
-      margin: 5px;
-      border-radius: 5px;
-      border: none;
-    }
-    button {
-      cursor: pointer;
-      background: #ff4757;
-      color: white;
-    }
+    body{font-family:Arial;margin:0;padding:0;display:flex;flex-direction:column;height:100vh}
+    #top{display:flex;gap:1rem;padding:0.5rem;background:#111}
+    #top input{flex:1;padding:0.5rem;font-size:1rem}
+    #top button{padding:0.5rem 1rem}
+    #main{display:flex;flex:1}
+    #player{flex:2}
+    #chat{flex:1;border-left:1px solid #444;display:flex;flex-direction:column}
+    #messages{flex:1;overflow-y:auto;padding:0.5rem;background:#f4f4f4}
+    #chatForm{display:flex}
+    #chatForm input{flex:1;padding:0.5rem}
+    #chatForm button{padding:0.5rem 1rem}
   </style>
 </head>
 <body>
-  <h1>🎬 Watch Together App</h1>
-  <div id="controls">
-    <input type="text" id="roomId" placeholder="Enter Room ID">
-    <button onclick="joinRoom()">Join Room</button>
-  </div>
-  <div>
-    <video id="localVideo" autoplay muted></video>
-    <video id="remoteVideo" autoplay></video>
+  <div id="top">
+    <input id="urlInput" placeholder="Paste YouTube URL and press Load">
+    <button onclick="loadVideo()">Load</button>
+    <button id="connectBtn" onclick="startWebRTC()">Connect</button>
   </div>
 
-  <script src="/socket.io/socket.io.js"></script>
-  <script>
-    const socket = io();
-    let localStream;
-    let peerConnections = {};
-    let roomId = null;
+  <div id="main">
+    <div id="player"></div>
+    <div id="chat">
+      <div id="messages"></div>
+      <form id="chatForm" onsubmit="sendMsg(event)">
+        <input id="msgInput" placeholder="Type message…" autocomplete="off">
+        <button>Send</button>
+      </form>
+    </div>
+  </div>
 
-    async function joinRoom() {
-      roomId = document.getElementById("roomId").value;
-      if (!roomId) {
-        alert("Please enter a Room ID");
-        return;
-      }
-      socket.emit("join-room", roomId);
-
-      localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      document.getElementById("localVideo").srcObject = localStream;
-    }
-
-    socket.on("user-joined", (userId) => {
-      createPeerConnection(userId, true);
-    });
-
-    socket.on("signal", async (data) => {
-      let pc = peerConnections[data.from];
-      if (!pc) {
-        pc = createPeerConnection(data.from, false);
-      }
-      await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
-      if (data.signal.type === "offer") {
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        socket.emit("signal", { to: data.from, signal: answer });
-      }
-    });
-
-    function createPeerConnection(userId, isInitiator) {
-      const pc = new RTCPeerConnection();
-      peerConnections[userId] = pc;
-
-      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-
-      pc.ontrack = (event) => {
-        document.getElementById("remoteVideo").srcObject = event.streams[0];
-      };
-
-      if (isInitiator) {
-        pc.onnegotiationneeded = async () => {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          socket.emit("signal", { to: userId, signal: offer });
-        };
-      }
-
-      return pc;
-    }
-  </script>
+<script src="https://www.youtube.com/iframe_api"></script>
+<script src="/socket.io/socket.io.js"></script>
+<script src="script.js"></script>
 </body>
 </html>
