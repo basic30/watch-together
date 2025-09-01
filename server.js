@@ -1,5 +1,4 @@
 // server.js
-// Node.js + Express + Socket.io signaling for 2-user rooms
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -7,51 +6,44 @@ const socketIo = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, { cors: { origin: '*' } });
-
 const PORT = process.env.PORT || 3000;
 
-// Serve static files
 app.use(express.static(__dirname + '/public'));
-
 const rooms = {};          // roomId -> { users: [socketIdA, socketIdB] }
 
 io.on('connection', socket => {
   console.log('Client connected:', socket.id);
 
-  // Join or create a room (max 2 users)
-  socket.on('join-room', () => {
-    let roomId = null;
-    // Find an available room
-    for (const id of Object.keys(rooms)) {
-      if (rooms[id].users.length === 1) {
-        roomId = id;
-        break;
-      }
-    }
-    // Else create new
-    if (!roomId) {
-      roomId = Math.random().toString(36).substring(2, 9);
-      rooms[roomId] = { users: [] };
-    }
-
-    socket.join(roomId);
-    rooms[roomId].users.push(socket.id);
-    socket.roomId = roomId;
-
-    io.to(socket.id).emit('joined', { roomId, users: rooms[roomId].users.length });
-
-    // If room now has 2 people, notify both
-    if (rooms[roomId].users.length === 2) {
-      io.to(roomId).emit('ready');
-    }
+  /* NEW: create room */
+  socket.on('create-room', () => {
+    const code = Math.floor(1000 + Math.random() * 9000).toString(); // 4-digit
+    rooms[code] = { users: [] };
+    socket.join(code);
+    rooms[code].users.push(socket.id);
+    socket.roomId = code;
+    socket.emit('created', code);
   });
 
-  // WebRTC signaling
+  /* NEW: join room by code */
+  socket.on('join-room-code', code => {
+    const room = rooms[code];
+    if (!room || room.users.length >= 2) {
+      socket.emit('invalid-code');
+      return;
+    }
+    socket.join(code);
+    room.users.push(socket.id);
+    socket.roomId = code;
+    socket.emit('joined', { roomId: code, users: room.users.length });
+    if (room.users.length === 2) io.to(code).emit('ready');
+  });
+
+  /* WebRTC signaling (unchanged) */
   socket.on('offer',  data => socket.to(socket.roomId).emit('offer',  data));
   socket.on('answer', data => socket.to(socket.roomId).emit('answer', data));
   socket.on('ice',    data => socket.to(socket.roomId).emit('ice',    data));
 
-  // Clean-up on disconnect
+  /* disconnect */
   socket.on('disconnect', () => {
     const room = rooms[socket.roomId];
     if (room) {
