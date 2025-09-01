@@ -1,57 +1,50 @@
 // server.js
 const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
-
 const app = express();
-const server = http.createServer(app);
-const io = socketIo(server, { cors: { origin: '*' } });
-const PORT = process.env.PORT || 3000;
+const server = require('http').createServer(app);
+const io = require('socket.io')(server);
 
-app.use(express.static(__dirname + '/public'));
-const rooms = {};          // roomId -> { users: [socketIdA, socketIdB] }
+app.use(express.static(__dirname));
 
-io.on('connection', socket => {
-  console.log('Client connected:', socket.id);
-
-  /* NEW: create room */
-  socket.on('create-room', () => {
-    const code = Math.floor(1000 + Math.random() * 9000).toString(); // 4-digit
-    rooms[code] = { users: [] };
-    socket.join(code);
-    rooms[code].users.push(socket.id);
-    socket.roomId = code;
-    socket.emit('created', code);
-  });
-
-  /* NEW: join room by code */
-  socket.on('join-room-code', code => {
-    const room = rooms[code];
-    if (!room || room.users.length >= 2) {
-      socket.emit('invalid-code');
+io.on('connection', (socket) => {
+  socket.on('join', (room) => {
+    socket.room = room;
+    socket.join(room);
+    const clients = io.sockets.adapter.rooms.get(room)?.size || 0;
+    if (clients > 2) {
+      socket.emit('full');
       return;
     }
-    socket.join(code);
-    room.users.push(socket.id);
-    socket.roomId = code;
-    socket.emit('joined', { roomId: code, users: room.users.length });
-    if (room.users.length === 2) io.to(code).emit('ready');
+    if (clients === 2) {
+      socket.to(room).emit('ready');
+    }
   });
 
-  /* WebRTC signaling (unchanged) */
-  socket.on('offer',  data => socket.to(socket.roomId).emit('offer',  data));
-  socket.on('answer', data => socket.to(socket.roomId).emit('answer', data));
-  socket.on('ice',    data => socket.to(socket.roomId).emit('ice',    data));
+  socket.on('offer', (offer) => {
+    if (socket.room) {
+      socket.to(socket.room).emit('offer', offer);
+    }
+  });
 
-  /* disconnect */
+  socket.on('answer', (answer) => {
+    if (socket.room) {
+      socket.to(socket.room).emit('answer', answer);
+    }
+  });
+
+  socket.on('candidate', (candidate) => {
+    if (socket.room) {
+      socket.to(socket.room).emit('candidate', candidate);
+    }
+  });
+
   socket.on('disconnect', () => {
-    const room = rooms[socket.roomId];
-    if (room) {
-      room.users = room.users.filter(id => id !== socket.id);
-      if (room.users.length === 0) delete rooms[socket.roomId];
-      else socket.to(socket.roomId).emit('peer-disconnected');
+    if (socket.room) {
+      socket.to(socket.room).emit('bye');
     }
   });
 });
 
-server.listen(PORT, () => console.log(`Signaling server listening on :${PORT}`));
+server.listen(3000, () => {
+  console.log('Signaling server running on port 3000');
+});
