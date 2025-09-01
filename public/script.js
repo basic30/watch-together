@@ -1,145 +1,211 @@
 // script.js
-const socket = io();
-let roomId, peer, dataChannel;
-let player, playerReady = false;
-let ignore = false;   // Prevent echo when receiving remote sync
+let socket;
+let pc;
+let dataChannel;
+let player;
+let isInitiator = false;
+let username;
+let currentRoom;
 
-function createRoom() {
-  socket.emit('create-room');
-}
-socket.on('created', code => {
-  roomId = code;
-  document.getElementById('createBtn').disabled = true;
-  document.getElementById('joinBtn').disabled  = true;
-  const span = document.getElementById('roomDisplay');
-  span.textContent = `Room ${code}`;
-  span.style.display = 'inline';
-});
+var tag = document.createElement('script');
+tag.src = "https://www.youtube.com/iframe_api";
+var firstScriptTag = document.getElementsByTagName('script')[0];
+firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
 
-function showJoinPrompt() {
-  const code = prompt('Enter 4-digit room code:')?.trim();
-  if (code && /^\d{4}$/.test(code)) {
-    socket.emit('join-room-code', code);
-  } else {
-    alert('Invalid code. Must be 4 digits.');
+function connect() {
+  let room = document.getElementById('room').value;
+  username = document.getElementById('username').value;
+  if (!username) {
+    alert('Enter username');
+    return;
   }
-}
-socket.on('invalid-code', () => alert('Room not found or already full'));
+  if (!room) {
+    room = Math.random().toString(36).substring(7);
+    document.getElementById('room').value = room;
+    alert('Share this Room ID: ' + room);
+  }
+  currentRoom = room;
 
-// ---------- YouTube IFrame ----------
-function onYouTubeIframeAPIReady() {
-  player = new YT.Player('player', {
-    height: '100%',
-    width: '100%',
-    events: {
-      onReady: () => { playerReady = true; },
-      onStateChange: onPlayerStateChange
-    }
+  socket = io();
+  socket.emit('join', room);
+
+  socket.on('full', () => {
+    alert('Room is full');
+  });
+
+  socket.on('ready', () => {
+    isInitiator = true;
+    createPeerConnection();
+    pc.createOffer()
+      .then(offer => {
+        pc.setLocalDescription(offer);
+        socket.emit('offer', offer);
+      })
+      .catch(console.error);
+  });
+
+  socket.on('offer', (offer) => {
+    isInitiator = false;
+    createPeerConnection();
+    pc.setRemoteDescription(new RTCSessionDescription(offer))
+      .then(() => pc.createAnswer())
+      .then(answer => {
+        pc.setLocalDescription(answer);
+        socket.emit('answer', answer);
+      })
+      .catch(console.error);
+  });
+
+  socket.on('answer', (answer) => {
+    pc.setRemoteDescription(new RTCSessionDescription(answer))
+      .catch(console.error);
+  });
+
+  socket.on('candidate', (candidate) => {
+    pc.addIceCandidate(new RTCIceCandidate(candidate))
+      .catch(console.error);
+  });
+
+  socket.on('bye', () => {
+    handleDisconnect();
   });
 }
 
-function loadVideo() {
-  const url = document.getElementById('urlInput').value;
-  const id = new URL(url).searchParams.get('v');
-  if (id && playerReady) {
-    player.loadVideoById(id);
-  }
-}
-
-function onPlayerStateChange(evt) {
-  if (!peer || ignore) return;
-  const state = evt.data;
-  const time = player.getCurrentTime();
-  sendPlayerEvent({ type: 'state', state, time });
-}
-
-// Send seek only when user scrubs (no API event, so hook mouseup)
-document.addEventListener('mouseup', () => {
-  if (!peer || ignore) return;
-  sendPlayerEvent({ type: 'seek', time: player.getCurrentTime() });
-});
-
-function sendPlayerEvent(obj) {
-  if (dataChannel && dataChannel.readyState === 'open') {
-    dataChannel.send(JSON.stringify(obj));
-  }
-}
-
-// ---------- Chat ----------
-function sendMsg(e) {
-  e.preventDefault();
-  const inp = document.getElementById('msgInput');
-  const msg = inp.value.trim();
-  if (!msg || !dataChannel || dataChannel.readyState !== 'open') return;
-  const packet = { type: 'chat', user: 'You', msg, ts: Date.now() };
-  appendChat(packet);
-  dataChannel.send(JSON.stringify(packet));
-  inp.value = '';
-}
-function appendChat({user, msg, ts}) {
-  const box = document.getElementById('messages');
-  const div = document.createElement('div');
-  div.innerHTML = `<small>${new Date(ts).toLocaleTimeString()}</small> <b>${user}</b>: ${msg}`;
-  box.appendChild(div);
-  box.scrollTop = box.scrollHeight;
-}
-
-// ---------- WebRTC ----------
-async function startWebRTC() {
-  document.getElementById('connectBtn').disabled = true;
-  socket.emit('join-room');
-}
-
-socket.on('joined', ({roomId: id}) => { roomId = id; });
-socket.on('ready', createPeer);
-
-function createPeer() {
-  peer = new RTCPeerConnection({
+function createPeerConnection() {
+  pc = new RTCPeerConnection({
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
   });
 
-  dataChannel = peer.createDataChannel('watch', { ordered: true });
-  dataChannel.onopen = () => console.log('Data channel open');
-  dataChannel.onmessage = e => handleRemote(JSON.parse(e.data));
-
-  peer.ondatachannel = e => {
-    dataChannel = e.channel;
-    dataChannel.onmessage = e => handleRemote(JSON.parse(e.data));
+  pc.onicecandidate = (e) => {
+    if (e.candidate) {
+      socket.emit('candidate', e.candidate);
+    }
   };
 
-  peer.onicecandidate = e => {
-    if (e.candidate) socket.emit('ice', { candidate: e.candidate });
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+      handleDisconnect();
+    }
   };
 
-  socket.on('offer',  async ({offer})  => { peer.setRemoteDescription(offer); await peer.setLocalDescription(await peer.createAnswer()); socket.emit('answer', {answer: peer.localDescription}); });
-  socket.on('answer', ({answer}) => peer.setRemoteDescription(answer));
-  socket.on('ice',    ({candidate}) => peer.addIceCandidate(candidate));
-
-  (async () => {
-    if (peer.connectionState !== 'new') return;
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    socket.emit('offer', {offer});
-  })();
-}
-
-// ---------- Sync & Chat ----------
-function handleRemote({type, ...rest}) {
-  ignore = true;
-  if (type === 'state') {
-    const {state, time} = rest;
-    if (Math.abs(player.getCurrentTime() - time) > 0.5) player.seekTo(time, true);
-    if (state === YT.PlayerState.PLAYING) player.playVideo();
-    if (state === YT.PlayerState.PAUSED)  player.pauseVideo();
-  } else if (type === 'seek') {
-    player.seekTo(rest.time, true);
-  } else if (type === 'chat') {
-    appendChat({...rest, user: 'Peer'});
+  if (isInitiator) {
+    dataChannel = pc.createDataChannel('syncChat');
+    setupDataChannel(dataChannel);
+  } else {
+    pc.ondatachannel = (e) => {
+      dataChannel = e.channel;
+      setupDataChannel(dataChannel);
+    };
   }
-  setTimeout(() => ignore = false, 100);
 }
 
-socket.on('peer-disconnected', () => {
-  alert('Peer disconnected');
-  window.location.reload();   // simple reconnect
-});
+function setupDataChannel(channel) {
+  channel.onopen = () => {
+    console.log('Data channel open');
+  };
+  channel.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.type === 'chat') {
+      addMessage(data.username, data.message, data.timestamp);
+    } else if (data.type === 'load') {
+      document.getElementById('yturl').value = data.url;
+      loadVideo(data.url);
+    } else if (data.type === 'play') {
+      if (player) {
+        isChanging = true;
+        player.seekTo(data.time, true);
+        player.playVideo();
+        setTimeout(() => { isChanging = false; }, 1000);
+      }
+    } else if (data.type === 'pause') {
+      if (player) {
+        isChanging = true;
+        player.seekTo(data.time, true);
+        player.pauseVideo();
+        setTimeout(() => { isChanging = false; }, 1000);
+      }
+    }
+  };
+}
+
+let isChanging = false;
+
+function onPlayerStateChange(event) {
+  if (isChanging || !dataChannel || dataChannel.readyState !== 'open') return;
+
+  const time = player.getCurrentTime();
+  if (event.data === YT.PlayerState.PLAYING) {
+    dataChannel.send(JSON.stringify({ type: 'play', time }));
+  } else if (event.data === YT.PlayerState.PAUSED) {
+    dataChannel.send(JSON.stringify({ type: 'pause', time }));
+  }
+}
+
+function loadVideoLocal() {
+  const url = document.getElementById('yturl').value;
+  if (!url) return;
+  loadVideo(url);
+  if (dataChannel && dataChannel.readyState === 'open') {
+    dataChannel.send(JSON.stringify({ type: 'load', url }));
+  }
+}
+
+function loadVideo(url) {
+  const videoId = extractVideoId(url);
+  if (!videoId) {
+    alert('Invalid YouTube URL');
+    return;
+  }
+  if (player) {
+    player.loadVideoById(videoId);
+  } else {
+    player = new YT.Player('player', {
+      height: '390',
+      width: '640',
+      videoId: videoId,
+      events: {
+        onReady: (event) => {
+          event.target.pauseVideo();
+        },
+        onStateChange: onPlayerStateChange
+      }
+    });
+  }
+}
+
+function extractVideoId(url) {
+  const regExp = /^.*(youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+  const match = url.match(regExp);
+  return (match && match[2].length === 11) ? match[2] : null;
+}
+
+function sendMessage() {
+  const msg = document.getElementById('message').value;
+  if (!msg || !dataChannel || dataChannel.readyState !== 'open') return;
+  const timestamp = new Date().toLocaleTimeString();
+  const data = { type: 'chat', username, message: msg, timestamp };
+  dataChannel.send(JSON.stringify(data));
+  addMessage(username, msg, timestamp);
+  document.getElementById('message').value = '';
+}
+
+function addMessage(user, msg, time) {
+  const chat = document.getElementById('chat');
+  const div = document.createElement('div');
+  div.innerHTML = `<strong>${user}</strong> (${time}): ${msg}`;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function handleDisconnect() {
+  alert('Other user disconnected. Trying to reconnect...');
+  if (pc) {
+    pc.close();
+    pc = null;
+  }
+  dataChannel = null;
+  // Rejoin the room
+  setTimeout(() => {
+    connect();
+  }, 2000);
+}
