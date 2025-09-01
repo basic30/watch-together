@@ -1,0 +1,40 @@
+<!-- index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Watch Together</title>
+  <style>
+    body { font-family: Arial, sans-serif; }
+    .container { display: flex; max-width: 1200px; margin: auto; }
+    .video-panel { flex: 2; }
+    .chat-panel { flex: 1; margin-left: 20px; }
+    #chat { height: 300px; overflow-y: scroll; border: 1px solid #ccc; padding: 10px; }
+    #player { margin-bottom: 10px; }
+    input { margin: 5px 0; display: block; width: 100%; }
+    button { margin: 5px 0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="video-panel">
+      <h2>Watch Together</h2>
+      <input id="room" placeholder="Room ID (leave blank to create new)">
+      <input id="username" placeholder="Your Username">
+      <button onclick="connect()">Connect</button>
+      <input id="yturl" placeholder="YouTube URL">
+      <button onclick="loadVideoLocal()">Load Video</button>
+      <div id="player"></div>
+    </div>
+    <div class="chat-panel">
+      <h3>Chat</h3>
+      <div id="chat"></div>
+      <input id="message" placeholder="Type a message">
+      <button onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
