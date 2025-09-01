@@ -1,12 +1,18 @@
 {
-  "name": "watch-together",
+  "name": "watch-together-webrtc",
   "version": "1.0.0",
+  "description": "WebRTC-based Watch-Together app with YouTube sync and chat",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
+  "engines": {
+    "node": ">=16"
+  },
   "dependencies": {
-    "express": "^4.18.2",
+    "express": "^4.19.2",
     "socket.io": "^4.7.5"
-  }
+  },
+  "keywords": ["webrtc", "youtube", "sync", "chat"],
+  "license": "MIT"
 }
