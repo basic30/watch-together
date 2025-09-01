@@ -4,6 +4,28 @@ let roomId, peer, dataChannel;
 let player, playerReady = false;
 let ignore = false;   // Prevent echo when receiving remote sync
 
+function createRoom() {
+  socket.emit('create-room');
+}
+socket.on('created', code => {
+  roomId = code;
+  document.getElementById('createBtn').disabled = true;
+  document.getElementById('joinBtn').disabled  = true;
+  const span = document.getElementById('roomDisplay');
+  span.textContent = `Room ${code}`;
+  span.style.display = 'inline';
+});
+
+function showJoinPrompt() {
+  const code = prompt('Enter 4-digit room code:')?.trim();
+  if (code && /^\d{4}$/.test(code)) {
+    socket.emit('join-room-code', code);
+  } else {
+    alert('Invalid code. Must be 4 digits.');
+  }
+}
+socket.on('invalid-code', () => alert('Room not found or already full'));
+
 // ---------- YouTube IFrame ----------
 function onYouTubeIframeAPIReady() {
   player = new YT.Player('player', {
