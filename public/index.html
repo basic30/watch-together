@@ -1,1 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Watch Together</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #121212;
+      color: white;
+      text-align: center;
+      margin: 0;
+      padding: 0;
+    }
+    video {
+      width: 45%;
+      margin: 10px;
+      border: 2px solid white;
+      border-radius: 10px;
+    }
+    #controls {
+      margin: 15px;
+    }
+    input, button {
+      padding: 8px;
+      margin: 5px;
+      border-radius: 5px;
+      border: none;
+    }
+    button {
+      cursor: pointer;
+      background: #ff4757;
+      color: white;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎬 Watch Together App</h1>
+  <div id="controls">
+    <input type="text" id="roomId" placeholder="Enter Room ID">
+    <button onclick="joinRoom()">Join Room</button>
+  </div>
+  <div>
+    <video id="localVideo" autoplay muted></video>
+    <video id="remoteVideo" autoplay></video>
+  </div>
 
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let localStream;
+    let peerConnections = {};
+    let roomId = null;
+
+    async function joinRoom() {
+      roomId = document.getElementById("roomId").value;
+      if (!roomId) {
+        alert("Please enter a Room ID");
+        return;
+      }
+      socket.emit("join-room", roomId);
+
+      localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      document.getElementById("localVideo").srcObject = localStream;
+    }
+
+    socket.on("user-joined", (userId) => {
+      createPeerConnection(userId, true);
+    });
+
+    socket.on("signal", async (data) => {
+      let pc = peerConnections[data.from];
+      if (!pc) {
+        pc = createPeerConnection(data.from, false);
+      }
+      await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
+      if (data.signal.type === "offer") {
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit("signal", { to: data.from, signal: answer });
+      }
+    });
+
+    function createPeerConnection(userId, isInitiator) {
+      const pc = new RTCPeerConnection();
+      peerConnections[userId] = pc;
+
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      pc.ontrack = (event) => {
+        document.getElementById("remoteVideo").srcObject = event.streams[0];
+      };
+
+      if (isInitiator) {
+        pc.onnegotiationneeded = async () => {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          socket.emit("signal", { to: userId, signal: offer });
+        };
+      }
+
+      return pc;
+    }
+  </script>
+</body>
+</html>
