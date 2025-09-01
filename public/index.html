@@ -18,11 +18,14 @@
   </style>
 </head>
 <body>
-  <div id="top">
-    <input id="urlInput" placeholder="Paste YouTube URL and press Load">
-    <button onclick="loadVideo()">Load</button>
-    <button id="connectBtn" onclick="startWebRTC()">Connect</button>
-  </div>
+ <div id="top">
+  <input id="urlInput" placeholder="Paste YouTube URL and press Load" />
+  <button onclick="loadVideo()">Load</button>
+
+  <button id="createBtn" onclick="createRoom()">Create Room</button>
+  <button id="joinBtn"  onclick="showJoinPrompt()">Join Room</button>
+  <span id="roomDisplay" style="color:#fff;margin-left:1rem;display:none"></span>
+</div>
 
   <div id="main">
     <div id="player"></div>
@@ -40,3 +43,4 @@
 <script src="script.js"></script>
 </body>
 </html>
+
