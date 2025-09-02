@@ -1,1 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Room • Watch Together</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="/styles.css" rel="stylesheet" />
+</head>
+<body>
+  <main class="container">
+    <header class="header">
+      <a href="/" class="link">&larr; Back</a>
+      <h1 class="title">Watch Together</h1>
+      <p class="subtitle" id="roomMeta">
+        Room: <span id="roomIdLabel">...</span> • Participants: <span id="count">0</span>/4
+      </p>
+    </header>
 
+    <section class="layout">
+       Left: Video Player and controls 
+      <div class="left">
+        <section class="card">
+          <h2>Share this Room</h2>
+          <div class="row">
+            <input id="shareLink" class="input" readonly />
+            <button id="copyBtn" class="btn secondary">Copy</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Load a Video</h2>
+          <div class="row">
+            <input id="videoUrl" class="input" placeholder="Paste YouTube or direct .mp4/.webm/.ogg URL" />
+            <button id="loadBtn" class="btn">Load</button>
+            <button id="fsSyncBtn" class="btn secondary">Sync Fullscreen</button>
+          </div>
+          <p class="muted">Note: Netflix cannot be embedded and will not work.</p>
+        </section>
+
+        <section class="player card" id="playerContainer">
+          <div id="ytContainer" class="hidden">
+            <div id="ytPlayer"></div>
+          </div>
+          <video id="filePlayer" class="hidden" controls playsinline></video>
+        </section>
+      </div>
+
+       Right: Video call 
+      <aside class="right card">
+        <h2>Video Call</h2>
+        <div class="row">
+          <button id="toggleMic" class="btn">Mute Mic</button>
+          <button id="toggleCam" class="btn secondary">Turn Camera Off</button>
+        </div>
+        <div id="peersGrid" class="peers-grid">
+           Local and remote videos appear here 
+        </div>
+        <p class="muted">Up to 4 participants. Your mic/camera stay local unless enabled.</p>
+      </aside>
+    </section>
+
+    <footer class="footer">Playback, pause, seeking and fullscreen are synchronized for everyone. Video call uses your browser’s P2P (WebRTC).</footer>
+  </main>
+
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script src="/room.js"></script>
+</body>
+</html>
