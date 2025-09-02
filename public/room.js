@@ -1,4 +1,6 @@
-// room.js
+// public/room.js
+// <CHANGE> v2.1: jitter smoothing, drift-aware sync, leader periodic sync, fullscreen sync guards.
+
 const params = new URLSearchParams(window.location.search)
 const roomId = params.get('id')
 
@@ -19,18 +21,53 @@ const peersGrid = document.getElementById('peersGrid')
 const toggleMicBtn = document.getElementById('toggleMic')
 const toggleCamBtn = document.getElementById('toggleCam')
 
+// ---- Sync tuning
+const DRIFT_THRESHOLD = 0.6       // seconds: only correct if off by more than this
+const SEEK_APPLY_THRESHOLD = 0.3  // seconds: for seek corrections
+const SEEK_RATE_MS = 800          // throttle outgoing seek
+const SYNC_INTERVAL_MS = 5000     // leader sends periodic soft sync
+
 let clientId = null
 let es = null
 let suppress = false
 let ytPlayer = null
 let ytReady = false
+let lastYTState = null
+let lastSeekSentAt = 0
+let lastAppliedEventAt = 0
+let fsSuppress = false
 
-// WebRTC
-const peers = new Map() // peerId -> { pc, el }
-let localStream = null
-let micEnabled = true
-let camEnabled = true
+// Leader election & participants
+const participants = new Set()
+let syncTimer = null
 
+function electLeader() {
+  const all = Array.from(participants).concat(clientId ? [clientId] : [])
+  if (all.length === 0) return null
+  all.sort()
+  return all[0]
+}
+function weAreLeader() {
+  const leader = electLeader()
+  return leader && clientId && leader === clientId
+}
+function startLeaderSync() {
+  stopLeaderSync()
+  if (!weAreLeader()) return
+  syncTimer = setInterval(() => {
+    // emit soft sync with current time and state
+    const { time, isPlaying } = getLocalState()
+    broadcast('sync', { time, isPlaying })
+  }, SYNC_INTERVAL_MS)
+}
+function stopLeaderSync() {
+  if (syncTimer) {
+    clearInterval(syncTimer)
+    syncTimer = null
+  }
+}
+
+// ---- URL helpers
 function isNetflix(url) {
   try { return new URL(url).hostname.includes('netflix.com') } catch { return false }
 }
@@ -55,6 +92,8 @@ function detectVideo(urlStr) {
   if (/\.(mp4|webm|ogg)(\?.*)?$/i.test(urlStr)) return { type: 'file', url: urlStr }
   return { type: 'unknown' }
 }
+
+// ---- UI helpers
 function setParticipants(count) {
   countEl.textContent = String(count)
 }
@@ -65,6 +104,45 @@ function showYouTube() {
 function showFile() {
   filePlayer.classList.remove('hidden')
   ytContainer.classList.add('hidden')
+}
+
+// ---- Player helpers
+function getActivePlayerType() {
+  return ytContainer.classList.contains('hidden') ? 'file' : 'yt'
+}
+function getCurrentTime() {
+  if (getActivePlayerType() === 'yt') {
+    try { return ytPlayer?.getCurrentTime() || 0 } catch { return 0 }
+  }
+  return filePlayer.currentTime || 0
+}
+function isLocallyPlaying() {
+  if (getActivePlayerType() === 'yt') {
+    try { return ytPlayer && ytPlayer.getPlayerState() === YT.PlayerState.PLAYING } catch { return false }
+  }
+  return !filePlayer.paused
+}
+function playAt(time) {
+  suppress = true
+  if (getActivePlayerType() === 'yt' && ytPlayer && ytReady) {
+    ytPlayer.seekTo(time || 0, true)
+    ytPlayer.playVideo()
+  } else {
+    filePlayer.currentTime = time || 0
+    filePlayer.play().catch(() => {})
+  }
+  setTimeout(() => { suppress = false }, 200)
+}
+function pauseAt(time) {
+  suppress = true
+  if (getActivePlayerType() === 'yt' && ytPlayer && ytReady) {
+    ytPlayer.seekTo(time || 0, true)
+    ytPlayer.pauseVideo()
+  } else {
+    filePlayer.currentTime = time || 0
+    filePlayer.pause()
+  }
+  setTimeout(() => { suppress = false }, 200)
 }
 function loadYouTube(videoId, time = 0, autoplay = false) {
   showYouTube()
@@ -90,6 +168,11 @@ function loadYouTube(videoId, time = 0, autoplay = false) {
         onStateChange: (e) => {
           if (suppress) return
           const state = e.data
+          // Ignore BUFFERING and repeated same-state transitions
+          if (state === YT.PlayerState.BUFFERING) return
+          if (state === lastYTState) return
+          lastYTState = state
+
           const t = ytPlayer.getCurrentTime ? ytPlayer.getCurrentTime() : 0
           if (state === YT.PlayerState.PLAYING) {
             broadcast('play', { time: t })
@@ -111,18 +194,19 @@ function loadFile(url, time = 0, autoplay = false) {
   else filePlayer.pause()
   setTimeout(() => { suppress = false }, 200)
 }
+
+// ---- Apply incoming events with drift checks
 function applyEvent(ev) {
   if (!ev) return
   if (ev.senderId && ev.senderId === clientId) return // ignore self
 
   // Presence and participants
   if (ev.type === 'presence') {
-    setParticipants(ev.count || Number(countEl.textContent) || 1)
-    if (ev.action === 'join' && ev.clientId && ev.clientId !== clientId) {
-      ensurePeer(ev.clientId, true) // we initiate offer
-    } else if (ev.action === 'leave' && ev.clientId) {
-      removePeer(ev.clientId)
-    }
+    if (ev.action === 'join' && ev.clientId) participants.add(ev.clientId)
+    if (ev.action === 'leave' && ev.clientId) participants.delete(ev.clientId)
+    setParticipants(ev.count || participants.size + 1)
+    // leader may have changed
+    startLeaderSync()
     return
   }
   if (ev.type === 'participants') {
@@ -132,6 +216,7 @@ function applyEvent(ev) {
 
   // Playback events
   if (ev.type === 'load' && ev.video) {
+    lastAppliedEventAt = Date.now()
     if (ev.video.type === 'youtube' && ev.video.videoId) {
       suppress = true
       loadYouTube(ev.video.videoId, ev.time || 0, !!ev.autoplay)
@@ -144,48 +229,52 @@ function applyEvent(ev) {
     return
   }
   if (ev.type === 'play') {
-    if (!ytContainer.classList.contains('hidden') && ytPlayer && ytReady) {
-      suppress = true
-      ytPlayer.seekTo(ev.time || 0, true)
-      ytPlayer.playVideo()
-      setTimeout(() => { suppress = false }, 200)
-    } else if (!filePlayer.classList.contains('hidden')) {
-      suppress = true
-      filePlayer.currentTime = ev.time || 0
-      filePlayer.play().catch(() => {})
-      setTimeout(() => { suppress = false }, 200)
+    const drift = Math.abs(getCurrentTime() - (ev.time || 0))
+    if (drift > DRIFT_THRESHOLD || !isLocallyPlaying()) {
+      playAt(ev.time || 0)
     }
     return
   }
   if (ev.type === 'pause') {
-    if (!ytContainer.classList.contains('hidden') && ytPlayer && ytReady) {
-      suppress = true
-      ytPlayer.seekTo(ev.time || 0, true)
-      ytPlayer.pauseVideo()
-      setTimeout(() => { suppress = false }, 200)
-    } else if (!filePlayer.classList.contains('hidden')) {
-      suppress = true
-      filePlayer.currentTime = ev.time || 0
-      filePlayer.pause()
-      setTimeout(() => { suppress = false }, 200)
+    const drift = Math.abs(getCurrentTime() - (ev.time || 0))
+    if (drift > DRIFT_THRESHOLD || isLocallyPlaying()) {
+      pauseAt(ev.time || 0)
     }
     return
   }
   if (ev.type === 'seek') {
-    if (!ytContainer.classList.contains('hidden') && ytPlayer && ytReady) {
+    const drift = Math.abs(getCurrentTime() - (ev.time || 0))
+    if (drift > SEEK_APPLY_THRESHOLD) {
       suppress = true
-      ytPlayer.seekTo(ev.time || 0, true)
-      setTimeout(() => { suppress = false }, 200)
-    } else if (!filePlayer.classList.contains('hidden')) {
-      suppress = true
-      filePlayer.currentTime = ev.time || 0
-      setTimeout(() => { suppress = false }, 200)
+      if (getActivePlayerType() === 'yt' && ytPlayer && ytReady) {
+        ytPlayer.seekTo(ev.time || 0, true)
+      } else {
+        filePlayer.currentTime = ev.time || 0
+      }
+      setTimeout(() => { suppress = false }, 150)
     }
     return
   }
 
-  // Fullscreen sync
+  // Soft periodic sync (leader)
+  if (ev.type === 'sync') {
+    // Only honor leader sync
+    const leader = electLeader()
+    if (!leader || ev.senderId !== leader) return
+    const drift = Math.abs(getCurrentTime() - (ev.time || 0))
+    if (ev.isPlaying) {
+      if (drift > DRIFT_THRESHOLD) playAt(ev.time || 0)
+      // else let it drift naturally (no micro-corrections)
+    } else {
+      if (drift > DRIFT_THRESHOLD) pauseAt(ev.time || 0)
+      else pauseAt(ev.time || 0) // ensure paused state
+    }
+    return
+  }
+
+  // Fullscreen sync (guard to avoid feedback loops)
   if (ev.type === 'fullscreen') {
+    fsSuppress = true
     if (ev.active) {
       try {
         if (!document.fullscreenElement) playerContainer.requestFullscreen().catch(() => {})
@@ -193,22 +282,14 @@ function applyEvent(ev) {
     } else {
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
     }
+    setTimeout(() => { fsSuppress = false }, 300)
     return
   }
 
   // WebRTC signaling
-  if (ev.type === 'rtc-offer' && ev.targetId === clientId) {
-    handleOffer(ev.senderId, ev.sdp)
-    return
-  }
-  if (ev.type === 'rtc-answer' && ev.targetId === clientId) {
-    handleAnswer(ev.senderId, ev.sdp)
-    return
-  }
-  if (ev.type === 'rtc-ice' && ev.targetId === clientId) {
-    handleIce(ev.senderId, ev.candidate)
-    return
-  }
+  if (ev.type === 'rtc-offer' && ev.targetId === clientId) { handleOffer(ev.senderId, ev.sdp); return }
+  if (ev.type === 'rtc-answer' && ev.targetId === clientId) { handleAnswer(ev.senderId, ev.sdp); return }
+  if (ev.type === 'rtc-ice' && ev.targetId === clientId) { handleIce(ev.senderId, ev.candidate); return }
 }
 
 function broadcast(type, payload = {}) {
@@ -220,7 +301,7 @@ function broadcast(type, payload = {}) {
   }).catch(() => {})
 }
 
-// Join room and get state + participant list
+// ---- Join, SSE, and initialization
 async function joinRoom() {
   const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/join`, {
     method: 'POST',
@@ -234,9 +315,14 @@ async function joinRoom() {
   }
   const data = await res.json()
   clientId = data.clientId
+
+  // Build participants set and update UI
+  participants.clear()
+  const others = (data.room?.participants || []).filter((id) => id !== clientId)
+  for (const id of others) participants.add(id)
   setParticipants((data.room?.participants || []).length || 1)
 
-  // Initialize video from current state (late join fix)
+  // Initialize video for late joiners
   const video = data.room?.video
   const state = data.room?.state
   if (video) {
@@ -245,16 +331,20 @@ async function joinRoom() {
     } else if (video.type === 'file' && video.url) {
       loadFile(video.url, state?.currentTime || 0, !!state?.isPlaying)
     }
+    // If leader indicates playing, make sure we play; else pause
+    if (state?.isPlaying) playAt(state.currentTime || 0)
+    else pauseAt(state?.currentTime || 0)
   }
 
-  // Prepare WebRTC: get media, add local tile
+  // Prepare media for WebRTC and add local tile
   await setupLocalMedia()
 
-  // Create connections to existing participants (we initiate offers)
-  const others = (data.room?.participants || []).filter((id) => id !== clientId)
+  // Initiate connections to others
   for (const pid of others) ensurePeer(pid, true)
-}
 
+  // Start/refresh leader sync
+  startLeaderSync()
+}
 function startSSE() {
   es = new EventSource(`/api/rooms/${encodeURIComponent(roomId)}/events?clientId=${encodeURIComponent(clientId)}`)
   es.onmessage = (msg) => {
@@ -263,14 +353,45 @@ function startSSE() {
       if (ev && ev.type) applyEvent(ev)
     } catch {}
   }
-  es.onerror = () => { /* browser auto-retries */ }
+  es.onerror = () => { /* auto-retry */ }
 }
 
-// File video event hooks
+// ---- Outgoing local events with throttling
 filePlayer.addEventListener('play', () => { if (!suppress) broadcast('play', { time: filePlayer.currentTime }) })
 filePlayer.addEventListener('pause', () => { if (!suppress) broadcast('pause', { time: filePlayer.currentTime }) })
-filePlayer.addEventListener('seeked', () => { if (!suppress) broadcast('seek', { time: filePlayer.currentTime }) })
+filePlayer.addEventListener('seeked', () => {
+  if (suppress) return
+  const now = Date.now()
+  if (now - lastSeekSentAt < SEEK_RATE_MS) return
+  lastSeekSentAt = now
+  broadcast('seek', { time: filePlayer.currentTime })
+})
 
+// Fullscreen sync: button and automatic detection with loop guard
+fsSyncBtn.addEventListener('click', async () => {
+  const goingFull = !document.fullscreenElement
+  try {
+    if (goingFull) await playerContainer.requestFullscreen()
+    else await document.exitFullscreen()
+  } catch {}
+  broadcast('fullscreen', { active: goingFull })
+})
+document.addEventListener('fullscreenchange', () => {
+  if (fsSuppress) return
+  const active = !!document.fullscreenElement
+  broadcast('fullscreen', { active })
+})
+
+// Clipboard share
+copyBtn.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(shareLinkEl.value)
+    copyBtn.textContent = 'Copied'
+    setTimeout(() => (copyBtn.textContent = 'Copy'), 1200)
+  } catch {}
+})
+
+// Load video flow
 loadBtn.addEventListener('click', () => {
   const v = (videoUrlInput.value || '').trim()
   if (!v) return
@@ -294,33 +415,22 @@ loadBtn.addEventListener('click', () => {
   broadcast('load', { video: videoPayload, time: 0, autoplay: false })
 })
 
-// Fullscreen sync
-fsSyncBtn.addEventListener('click', async () => {
-  const goingFull = !document.fullscreenElement
-  if (goingFull) {
-    try { await playerContainer.requestFullscreen() } catch {}
-  } else {
-    try { await document.exitFullscreen() } catch {}
-  }
-  broadcast('fullscreen', { active: goingFull })
-})
+// ---- Local state helpers used by leader sync
+function getLocalState() {
+  return { time: getCurrentTime(), isPlaying: isLocallyPlaying() }
+}
 
-// Clipboard share
-copyBtn.addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText(shareLinkEl.value)
-    copyBtn.textContent = 'Copied'
-    setTimeout(() => (copyBtn.textContent = 'Copy'), 1200)
-  } catch {}
-})
+// ---- WebRTC (unchanged logic aside from being here)
+const peers = new Map()
+let localStream = null
+let micEnabled = true
+let camEnabled = true
 
-// WebRTC helpers
 async function setupLocalMedia() {
   if (localStream) return
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
   } catch {
-    // fallback to audio-only if camera blocked
     try {
       localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
     } catch {
@@ -329,7 +439,6 @@ async function setupLocalMedia() {
   }
   addOrUpdateLocalTile()
 }
-
 function addOrUpdateLocalTile() {
   let tile = document.getElementById(`peer-${clientId}`)
   if (!tile) {
@@ -351,7 +460,6 @@ function addOrUpdateLocalTile() {
   const v = document.getElementById(`video-${clientId}`)
   if (v && localStream) v.srcObject = localStream
 }
-
 function ensurePeer(peerId, initiateOffer) {
   if (peerId === clientId) return
   if (peers.has(peerId)) return peers.get(peerId)
@@ -359,15 +467,10 @@ function ensurePeer(peerId, initiateOffer) {
   const pc = new RTCPeerConnection({
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   })
-  // Add our local tracks
-  if (localStream) {
-    for (const track of localStream.getTracks()) pc.addTrack(track, localStream)
-  }
+  if (localStream) for (const track of localStream.getTracks()) pc.addTrack(track, localStream)
 
   pc.onicecandidate = (e) => {
-    if (e.candidate) {
-      broadcast('rtc-ice', { targetId: peerId, candidate: e.candidate })
-    }
+    if (e.candidate) broadcast('rtc-ice', { targetId: peerId, candidate: e.candidate })
   }
   pc.ontrack = (e) => {
     let tile = document.getElementById(`peer-${peerId}`)
@@ -389,28 +492,20 @@ function ensurePeer(peerId, initiateOffer) {
     const v = document.getElementById(`video-${peerId}`)
     if (v) v.srcObject = e.streams[0]
   }
-
   peers.set(peerId, { pc })
   if (initiateOffer) {
-    pc.createOffer().then((offer) => {
-      return pc.setLocalDescription(offer)
-    }).then(() => {
-      broadcast('rtc-offer', { targetId: peerId, sdp: pc.localDescription })
-    }).catch(() => {})
+    pc.createOffer().then((offer) => pc.setLocalDescription(offer))
+      .then(() => broadcast('rtc-offer', { targetId: peerId, sdp: pc.localDescription }))
+      .catch(() => {})
   }
   return { pc }
 }
-
 function removePeer(peerId) {
   const entry = peers.get(peerId)
-  if (entry) {
-    try { entry.pc.close() } catch {}
-    peers.delete(peerId)
-  }
+  if (entry) { try { entry.pc.close() } catch {} peers.delete(peerId) }
   const tile = document.getElementById(`peer-${peerId}`)
   if (tile) tile.remove()
 }
-
 async function handleOffer(fromId, sdp) {
   const { pc } = ensurePeer(fromId, false)
   await pc.setRemoteDescription(new RTCSessionDescription(sdp)).catch(() => {})
@@ -419,19 +514,15 @@ async function handleOffer(fromId, sdp) {
   await pc.setLocalDescription(answer).catch(() => {})
   broadcast('rtc-answer', { targetId: fromId, sdp: pc.localDescription })
 }
-
 async function handleAnswer(fromId, sdp) {
   const entry = peers.get(fromId)
   if (!entry) return
   await entry.pc.setRemoteDescription(new RTCSessionDescription(sdp)).catch(() => {})
 }
-
 async function handleIce(fromId, candidate) {
   const entry = peers.get(fromId)
   if (!entry) return
-  try {
-    await entry.pc.addIceCandidate(new RTCIceCandidate(candidate))
-  } catch {}
+  try { await entry.pc.addIceCandidate(new RTCIceCandidate(candidate)) } catch {}
 }
 
 // Mic/cam toggles
@@ -446,7 +537,7 @@ toggleCamBtn.addEventListener('click', () => {
   toggleCamBtn.textContent = camEnabled ? 'Turn Camera Off' : 'Turn Camera On'
 })
 
-// Init
+// ---- Boot
 ;(async function init() {
   if (!roomId) { alert('Missing room ID'); window.location.href = '/'; return }
   roomIdLabel.textContent = roomId
