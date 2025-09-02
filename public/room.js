@@ -1,4 +1,4 @@
-// public/room.js
+// public/room.js (updated)
 // Behavior: load URL is shared; only "pause" is synced (anyone pauses -> everyone pauses).
 // Play/seek are local per user. Fullscreen is synced. Includes 4-person WebRTC call and live chat.
 
@@ -17,6 +17,9 @@ const playerContainer = document.getElementById('playerContainer')
 
 const ytContainer = document.getElementById('ytContainer')
 const filePlayer = document.getElementById('filePlayer')
+
+// new: embed container (we'll reuse/inject into playerContainer)
+let embedFrame = null
 
 const peersGrid = document.getElementById('peersGrid')
 const toggleMicBtn = document.getElementById('toggleMic')
@@ -41,6 +44,9 @@ let camEnabled = true
 function isNetflix(url) {
   try { return new URL(url).hostname.includes('netflix.com') } catch { return false }
 }
+
+/* ---------- Parsers for common platforms ---------- */
+// YouTube existing
 function parseYouTubeId(urlStr) {
   try {
     const u = new URL(urlStr)
@@ -55,17 +61,132 @@ function parseYouTubeId(urlStr) {
   if (/^[a-zA-Z0-9_-]{11}$/.test(urlStr)) return urlStr
   return null
 }
-function detectVideo(urlStr) {
-  if (isNetflix(urlStr)) return { type: 'unsupported' }
-  const ytId = parseYouTubeId(urlStr)
-  if (ytId) return { type: 'youtube', videoId: ytId, url: urlStr }
-  if (/\.(mp4|webm|ogg)(\?.*)?$/i.test(urlStr)) return { type: 'file', url: urlStr }
-  return { type: 'unknown' }
+
+// Vimeo: vimeo.com/123456 or player.vimeo.com/video/12345
+function parseVimeoId(urlStr) {
+  try {
+    const u = new URL(urlStr)
+    if (u.hostname.includes('vimeo.com')) {
+      const parts = u.pathname.split('/').filter(Boolean)
+      const id = parts[parts.length - 1]
+      if (/^\d+$/.test(id)) return id
+    }
+  } catch {}
+  return null
 }
 
+// Facebook: video urls with /videos/ID or watch/?v=ID or fb.watch/...
+function parseFacebookUrl(urlStr) {
+  try {
+    const u = new URL(urlStr)
+    if (u.hostname.includes('facebook.com') || u.hostname.includes('fb.watch')) {
+      return urlStr // keep original URL for plugin
+    }
+  } catch {}
+  return null
+}
+
+// Instagram: handle /p/ or /reel/ or /tv/
+function parseInstagramUrl(urlStr) {
+  try {
+    const u = new URL(urlStr)
+    if (u.hostname.includes('instagram.com')) {
+      // we'll use instagram embed URL pattern
+      return urlStr
+    }
+  } catch {}
+  return null
+}
+
+// Google Drive share link -> ID
+function parseDriveId(urlStr) {
+  try {
+    const u = new URL(urlStr)
+    if (u.hostname === 'drive.google.com') {
+      // formats: /file/d/ID/view or open?id=ID
+      const parts = u.pathname.split('/')
+      const idx = parts.indexOf('d')
+      if (idx >= 0 && parts[idx + 1]) return parts[idx + 1]
+      if (u.searchParams.get('id')) return u.searchParams.get('id')
+    }
+  } catch {}
+  return null
+}
+
+// direct file (.mp4, .webm, .ogg)
+function isDirectFile(urlStr) {
+  return /\.(mp4|webm|ogg|m3u8)(\?.*)?$/i.test(urlStr)
+}
+
+/* ---------- detectVideo: return meta describing how to load ---------- */
+function detectVideo(urlStr) {
+  if (!urlStr || typeof urlStr !== 'string') return { type: 'unknown' }
+  if (isNetflix(urlStr)) return { type: 'unsupported' }
+
+  // try youtube
+  const ytId = parseYouTubeId(urlStr)
+  if (ytId) return { type: 'youtube', videoId: ytId, url: urlStr }
+
+  // direct file
+  if (isDirectFile(urlStr)) return { type: 'file', url: urlStr }
+
+  // vimeo
+  const vimeoId = parseVimeoId(urlStr)
+  if (vimeoId) return { type: 'vimeo', videoId: vimeoId, url: urlStr }
+
+  // google drive
+  const driveId = parseDriveId(urlStr)
+  if (driveId) return { type: 'drive', id: driveId, url: urlStr }
+
+  // facebook
+  const fb = parseFacebookUrl(urlStr)
+  if (fb) return { type: 'facebook', url: urlStr }
+
+  // instagram
+  const ig = parseInstagramUrl(urlStr)
+  if (ig) return { type: 'instagram', url: urlStr }
+
+  // fall back to generic embed attempt
+  return { type: 'embed', url: urlStr }
+}
+
+/* ---------- UI helpers: show/hide expected containers ---------- */
 function setParticipants(count) { countEl.textContent = String(count) }
-function showYouTube() { ytContainer.classList.remove('hidden'); filePlayer.classList.add('hidden') }
-function showFile() { filePlayer.classList.remove('hidden'); ytContainer.classList.add('hidden') }
+function showYouTube() {
+  ytContainer.classList.remove('hidden')
+  filePlayer.classList.add('hidden')
+  removeEmbedFrame()
+}
+function showFile() {
+  filePlayer.classList.remove('hidden')
+  ytContainer.classList.add('hidden')
+  removeEmbedFrame()
+}
+function showEmbed() {
+  // hide specific players, create/inject iframe into playerContainer
+  ytContainer.classList.add('hidden')
+  filePlayer.classList.add('hidden')
+  if (!embedFrame) {
+    embedFrame = document.createElement('iframe')
+    embedFrame.id = 'embedFrame'
+    embedFrame.setAttribute('allowfullscreen', '')
+    embedFrame.setAttribute('webkitallowfullscreen', '')
+    embedFrame.setAttribute('playsinline', '')
+    embedFrame.style.width = '100%'
+    embedFrame.style.height = '100%'
+    embedFrame.style.border = '0'
+    playerContainer.appendChild(embedFrame)
+  }
+  embedFrame.classList.remove('hidden')
+}
+function removeEmbedFrame() {
+  if (embedFrame) {
+    try { embedFrame.remove() } catch {}
+    embedFrame = null
+  }
+}
+
+/* ---------- loaders for each type ---------- */
 
 function loadYouTube(videoId, time = 0, autoplay = false) {
   showYouTube()
@@ -106,12 +227,64 @@ function loadFile(url, time = 0, autoplay = false) {
   showFile()
   suppress = true
   filePlayer.src = url
-  filePlayer.currentTime = Math.max(0, time || 0)
+  try { filePlayer.currentTime = Math.max(0, time || 0) } catch {}
   if (autoplay) filePlayer.play().catch(() => {})
   else filePlayer.pause()
   setTimeout(() => { suppress = false }, 200)
 }
 
+// Vimeo embed
+function loadVimeo(id) {
+  const src = `https://player.vimeo.com/video/${encodeURIComponent(id)}`
+  showEmbed()
+  embedFrame.src = src
+  // NOTE: Vimeo player API could be added to sync pause; for now use iframe and rely on viewer's controls.
+}
+
+// Google Drive preview embed
+function loadDrive(id) {
+  // public files: https://drive.google.com/file/d/ID/preview
+  const src = `https://drive.google.com/file/d/${encodeURIComponent(id)}/preview`
+  showEmbed()
+  embedFrame.src = src
+}
+
+// Facebook plugin embed
+function loadFacebook(url) {
+  // Use Facebook video plugin wrapper
+  // plugin URL: https://www.facebook.com/plugins/video.php?href={url}&show_text=0&width=560
+  const src = `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=0&width=560`
+  showEmbed()
+  embedFrame.src = src
+}
+
+// Instagram embed (attempt)
+function loadInstagram(url) {
+  // Instagram supports an embed path: https://www.instagram.com/p/{shortcode}/embed/ or /reel/{id}/embed
+  // We'll attempt using /embed endpoint.
+  // Convert to canonical embed URL if possible
+  try {
+    const u = new URL(url)
+    // Ensure trailing slash
+    let path = u.pathname
+    if (!path.endsWith('/')) path += '/'
+    const src = `https://www.instagram.com${path}embed/`
+    showEmbed()
+    embedFrame.src = src
+  } catch {
+    // fallback to direct url
+    showEmbed()
+    embedFrame.src = url
+  }
+}
+
+// Generic embed attempt
+function loadGenericEmbed(url) {
+  showEmbed()
+  embedFrame.src = url
+}
+
+/* ---------- Chat UI helpers (unchanged) ---------- */
 function appendChatMessage({ senderId, text, ts }) {
   const el = document.createElement('div')
   el.className = 'chat-msg'
@@ -123,7 +296,7 @@ function appendChatMessage({ senderId, text, ts }) {
 }
 function escapeHtml(s=''){ return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[c])) }
 
-// Incoming events
+/* ---------- Incoming events handler (modified to handle embed loads) ---------- */
 function applyEvent(ev) {
   if (!ev) return
   if (ev.senderId && ev.senderId === clientId) return
@@ -136,13 +309,35 @@ function applyEvent(ev) {
   if (ev.type === 'participants') { setParticipants(ev.count); return }
 
   if (ev.type === 'load' && ev.video) {
-    if (ev.video.type === 'youtube' && ev.video.videoId) {
+    // load accordingly
+    const v = ev.video
+    if (v.type === 'youtube' && v.videoId) {
       suppress = true
-      loadYouTube(ev.video.videoId, 0, false)
+      loadYouTube(v.videoId, 0, false)
       setTimeout(() => { suppress = false }, 200)
-    } else if (ev.video.type === 'file' && ev.video.url) {
+    } else if (v.type === 'file' && v.url) {
       suppress = true
-      loadFile(ev.video.url, 0, false)
+      loadFile(v.url, 0, false)
+      setTimeout(() => { suppress = false }, 200)
+    } else if (v.type === 'vimeo' && v.videoId) {
+      suppress = true
+      loadVimeo(v.videoId)
+      setTimeout(() => { suppress = false }, 200)
+    } else if (v.type === 'drive' && v.id) {
+      suppress = true
+      loadDrive(v.id)
+      setTimeout(() => { suppress = false }, 200)
+    } else if (v.type === 'facebook' && v.url) {
+      suppress = true
+      loadFacebook(v.url)
+      setTimeout(() => { suppress = false }, 200)
+    } else if (v.type === 'instagram' && v.url) {
+      suppress = true
+      loadInstagram(v.url)
+      setTimeout(() => { suppress = false }, 200)
+    } else if (v.type === 'embed' && v.url) {
+      suppress = true
+      loadGenericEmbed(v.url)
       setTimeout(() => { suppress = false }, 200)
     }
     return
@@ -154,6 +349,10 @@ function applyEvent(ev) {
       ytPlayer.pauseVideo()
     } else if (!filePlayer.classList.contains('hidden')) {
       filePlayer.pause()
+    } else if (embedFrame) {
+      // can't reliably pause cross-origin iframes; nothing we can do here
+      // as a fallback, blur focus
+      try { embedFrame.contentWindow.postMessage({ type: 'pause' }, '*') } catch {}
     }
     setTimeout(() => { suppress = false }, 150)
     return
@@ -179,6 +378,7 @@ function applyEvent(ev) {
   }
 }
 
+/* ---------- broadcast helper (unchanged) ---------- */
 function broadcast(type, payload = {}) {
   const ev = { type, senderId: clientId, ...payload }
   fetch(`/api/rooms/${encodeURIComponent(roomId)}/broadcast`, {
@@ -188,6 +388,7 @@ function broadcast(type, payload = {}) {
   }).catch(() => {})
 }
 
+/* ---------- join / SSE (unchanged except additional load handling) ---------- */
 async function joinRoom() {
   const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/join`, {
     method: 'POST',
@@ -205,8 +406,8 @@ async function joinRoom() {
 
   const video = data.room?.video
   if (video) {
-    if (video.type === 'youtube' && video.videoId) loadYouTube(video.videoId, 0, false)
-    else if (video.type === 'file' && video.url) loadFile(video.url, 0, false)
+    // server should pass the same structured video object (type + attrs)
+    applyEvent({ type: 'load', video })
   }
 
   await setupLocalMedia()
@@ -221,7 +422,8 @@ function startSSE() {
   }
 }
 
-// Local events
+/* ---------- Local event listeners (pause handler kept; file pause already) ---------- */
+filePlayer.addEventListener('play', () => { if (!suppress) broadcast('play', { time: filePlayer.currentTime }) })
 filePlayer.addEventListener('pause', () => { if (!suppress) broadcast('pause', { time: filePlayer.currentTime }) })
 
 fsSyncBtn.addEventListener('click', async () => {
@@ -241,12 +443,13 @@ copyBtn.addEventListener('click', async () => {
   } catch {}
 })
 
+/* ---------- Main load button: detect video and broadcast structured payload ---------- */
 loadBtn.addEventListener('click', () => {
   const v = (videoUrlInput.value || '').trim()
   if (!v) return
   const meta = detectVideo(v)
-  if (meta.type === 'unsupported') { alert('Netflix cannot be embedded.'); return }
-  if (meta.type === 'unknown') { alert('Use YouTube or a direct .mp4/.webm/.ogg URL.'); return }
+  if (meta.type === 'unsupported') { alert('This site cannot be embedded (Netflix and other DRM platforms).'); return }
+  if (meta.type === 'unknown') { alert('Could not recognise the link. Try a direct .mp4/.webm/.ogg URL, YouTube, Vimeo, Facebook/Instagram public video, or a public Google Drive share link.'); return }
 
   let videoPayload = null
   if (meta.type === 'youtube') {
@@ -255,11 +458,27 @@ loadBtn.addEventListener('click', () => {
   } else if (meta.type === 'file') {
     videoPayload = { type: 'file', url: meta.url }
     suppress = true; loadFile(meta.url, 0, false); setTimeout(() => { suppress = false }, 200)
+  } else if (meta.type === 'vimeo') {
+    videoPayload = { type: 'vimeo', url: meta.url, videoId: meta.videoId }
+    suppress = true; loadVimeo(meta.videoId); setTimeout(() => { suppress = false }, 200)
+  } else if (meta.type === 'drive') {
+    videoPayload = { type: 'drive', url: meta.url, id: meta.id }
+    suppress = true; loadDrive(meta.id); setTimeout(() => { suppress = false }, 200)
+  } else if (meta.type === 'facebook') {
+    videoPayload = { type: 'facebook', url: meta.url }
+    suppress = true; loadFacebook(meta.url); setTimeout(() => { suppress = false }, 200)
+  } else if (meta.type === 'instagram') {
+    videoPayload = { type: 'instagram', url: meta.url }
+    suppress = true; loadInstagram(meta.url); setTimeout(() => { suppress = false }, 200)
+  } else if (meta.type === 'embed') {
+    videoPayload = { type: 'embed', url: meta.url }
+    suppress = true; loadGenericEmbed(meta.url); setTimeout(() => { suppress = false }, 200)
   }
+
   broadcast('load', { video: videoPayload, time: 0, autoplay: false })
 })
 
-// Chat
+/* ---------- Chat (unchanged) ---------- */
 function sendChat() {
   const text = (chatInput.value || '').trim()
   if (!text) return
@@ -271,7 +490,7 @@ function sendChat() {
 chatSend.addEventListener('click', sendChat)
 chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat() })
 
-// WebRTC
+/* ---------- WebRTC (unchanged) ---------- */
 async function setupLocalMedia() {
   if (localStream) return
   try { localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true }) }
@@ -361,7 +580,7 @@ toggleCamBtn.addEventListener('click', () => {
   toggleCamBtn.textContent = camEnabled ? 'Turn Camera Off' : 'Turn Camera On'
 })
 
-// Init
+/* ---------- Init ---------- */
 ;(async function init() {
   if (!roomId) { alert('Missing room ID'); window.location.href = '/'; return }
   roomIdLabel.textContent = roomId
