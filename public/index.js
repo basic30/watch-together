@@ -15,7 +15,7 @@ createBtn.addEventListener('click', async () => {
       createResult.textContent = 'Failed to create room'
       createBtn.disabled = false
     }
-  } catch (e) {
+  } catch {
     createResult.textContent = 'Error creating room'
     createBtn.disabled = false
   }
