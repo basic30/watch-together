@@ -212,7 +212,10 @@ function loadYouTube(videoId, time = 0, autoplay = false) {
         onStateChange: (e) => {
           if (suppress) return
           const state = e.data
-          if (state === YT.PlayerState.PAUSED) {
+          if (state === YT.PlayerState.PLAYING) {
+            const t = ytPlayer.getCurrentTime ? ytPlayer.getCurrentTime() : 0
+            broadcast('play', { time: t })
+          } else if (state === YT.PlayerState.PAUSED) {
             const t = ytPlayer.getCurrentTime ? ytPlayer.getCurrentTime() : 0
             broadcast('pause', { time: t })
           }
