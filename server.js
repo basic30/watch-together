@@ -116,8 +116,8 @@ const server = http.createServer(async (req, res) => {
   if (pathname.startsWith('/api/rooms/') && pathname.endsWith('/join') && req.method === 'POST') {
     const id = pathname.split('/')[3]
     const room = getOrCreateRoom(id)
-    if (room.participants.size >= 4) {
-      return respondJSON(res, 403, { error: 'Room is full (max 4 participants)' })
+    if (room.participants.size >= 6) {
+      return respondJSON(res, 403, { error: 'Room is full (max 6 participants)' })
     }
     const body = await parseBody(req)
     const clientId = body?.clientId || crypto.randomUUID()
@@ -195,3 +195,4 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`)
 })
+
