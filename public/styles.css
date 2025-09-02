@@ -79,7 +79,7 @@ body{
 #ytPlayer, #filePlayer{
   width: 100%;
   max-width: 100%;
-  aspect-ratio: 16 / 9;
+  /* aspect-ratio: 16 / 9;*/
   background: #000;
   border-radius: 8px;
   overflow: hidden;
