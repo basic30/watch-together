@@ -1,0 +1,120 @@
+/* Minimal palette: primary + neutrals (4 colors total) */
+:root{
+  --bg: #0b0b0c;        /* neutral */
+  --card: #141416;      /* neutral */
+  --muted: #a1a1aa;     /* neutral */
+  --border: #2a2a2e;    /* neutral */
+  --primary: #22a3ff;   /* primary */
+  --text: #ffffff;      /* neutral */
+}
+
+*{ box-sizing: border-box; }
+html, body{ height:100%; }
+body{
+  margin:0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial;
+  line-height: 1.5;
+}
+
+.container{
+  max-width: 1100px;
+  padding: 24px;
+  margin: 0 auto;
+}
+
+.header{ margin-bottom: 16px; }
+.title{ margin: 0; font-size: 28px; font-weight: 700; }
+.subtitle{ margin: 8px 0 0; color: var(--muted); }
+
+.card{
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin: 16px 0;
+}
+
+.row{ display: flex; gap: 8px; align-items: center; }
+.input{
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  outline: none;
+}
+.input[readonly]{ opacity: 0.9; }
+
+.btn{
+  padding: 10px 16px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--primary);
+  color: #001018;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn.secondary{
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text);
+}
+.btn:disabled{ opacity: .6; cursor: not-allowed; }
+
+.link{ color: var(--primary); text-decoration: none; }
+
+.footer{ margin-top: 24px; color: var(--muted); font-size: 14px; }
+
+.layout{
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+.left{ flex: 2; min-width: 0; }
+.right{ flex: 1; min-width: 280px; }
+
+.player{ display: grid; }
+#ytPlayer, #filePlayer{
+  width: 100%;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.hidden{ display: none; }
+.muted{ color: var(--muted); font-size: 14px; }
+
+/* Peers grid */
+.peers-grid{
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.peer-tile{
+  position: relative;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.peer-tile video{
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  aspect-ratio: 4 / 3;
+}
+.peer-label{
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  background: rgba(0,0,0,.6);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+}
