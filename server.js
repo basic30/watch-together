@@ -1,3 +1,7 @@
+// server.js
+// Minimal Node server (no dependencies) serving static files + SSE relay + WebRTC signaling.
+// Run locally: node server.js  → http://localhost:3000
+
 const http = require('node:http')
 const url = require('node:url')
 const fs = require('node:fs')
@@ -6,41 +10,25 @@ const crypto = require('node:crypto')
 
 const PORT = process.env.PORT || 3000
 
-// Rooms: in-memory
-// room = {
-//   id,
-//   video: { type: 'youtube'|'file', url, videoId? } | null,
-//   state: { isPlaying: boolean, currentTime: number, updatedAt: number }, // currentTime in seconds, updatedAt ms
-//   participants: Set<clientId>,
-//   clients: Set<ServerResponse>,
-//   createdAt: number,
-// }
+// Rooms in memory
+// room = { id, video: { type, url, videoId? } | null, participants: Set<clientId>, clients: Set<res>, createdAt }
 const rooms = new Map()
-
-function generateId() {
-  return crypto.randomBytes(3).toString('hex')
-}
-function nowMs() { return Date.now() }
 
 function getOrCreateRoom(id) {
   if (!rooms.has(id)) {
     rooms.set(id, {
       id,
       video: null,
-      state: { isPlaying: false, currentTime: 0, updatedAt: nowMs() },
       participants: new Set(),
       clients: new Set(),
-      createdAt: nowMs(),
+      createdAt: Date.now(),
     })
   }
   return rooms.get(id)
 }
 
-function computeCurrentTime(room) {
-  const { isPlaying, currentTime, updatedAt } = room.state
-  if (!isPlaying) return currentTime
-  const elapsed = (nowMs() - updatedAt) / 1000
-  return Math.max(0, currentTime + elapsed)
+function generateId() {
+  return crypto.randomBytes(3).toString('hex')
 }
 
 function sendSSE(res, event) {
@@ -54,8 +42,8 @@ function broadcast(room, event) {
 function parseBody(req) {
   return new Promise((resolve) => {
     let data = ''
-    req.on('data', (chunk) => {
-      data += chunk
+    req.on('data', (c) => {
+      data += c
       if (data.length > 1e6) req.destroy()
     })
     req.on('end', () => {
@@ -83,7 +71,9 @@ function serveStatic(req, res) {
     res.writeHead(403); return res.end('Forbidden')
   }
   fs.stat(filePath, (err, stat) => {
-    if (err || !stat.isFile()) { res.writeHead(404); return res.end('Not Found') }
+    if (err || !stat.isFile()) {
+      res.writeHead(404); return res.end('Not Found')
+    }
     const ext = path.extname(filePath).toLowerCase()
     const mime =
       ext === '.html' ? 'text/html; charset=utf-8' :
@@ -115,15 +105,14 @@ const server = http.createServer(async (req, res) => {
   // Create room
   if (pathname === '/api/rooms/create' && req.method === 'POST') {
     const id = generateId()
-    const room = getOrCreateRoom(id)
-    respondJSON(res, 200, {
+    getOrCreateRoom(id)
+    return respondJSON(res, 200, {
       id,
       joinUrl: `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}/room.html?id=${id}`,
     })
-    return
   }
 
-  // Join room (reserves a seat and returns full state + participants list)
+  // Join room (reserve seat, return current room state)
   if (pathname.startsWith('/api/rooms/') && pathname.endsWith('/join') && req.method === 'POST') {
     const id = pathname.split('/')[3]
     const room = getOrCreateRoom(id)
@@ -133,56 +122,37 @@ const server = http.createServer(async (req, res) => {
     const body = await parseBody(req)
     const clientId = body?.clientId || crypto.randomUUID()
     room.participants.add(clientId)
-
-    // Notify others about presence
     broadcast(room, { type: 'presence', action: 'join', clientId, count: room.participants.size })
-
-    respondJSON(res, 200, {
+    return respondJSON(res, 200, {
       ok: true,
       clientId,
       room: {
         id: room.id,
-        video: room.video,
-        state: {
-          isPlaying: room.state.isPlaying,
-          // computed current time for late joiners
-          currentTime: computeCurrentTime(room),
-        },
+        video: room.video,                 // late joiners load same URL (no autoplay)
         participants: Array.from(room.participants),
       },
     })
-    return
   }
 
-  // SSE events (subscribe)
+  // SSE subscribe
   if (pathname.startsWith('/api/rooms/') && pathname.endsWith('/events') && req.method === 'GET') {
     const id = pathname.split('/')[3]
     const room = getOrCreateRoom(id)
     const clientId = query.clientId || crypto.randomUUID()
-
-    // connection headers
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
     })
-
     room.clients.add(res)
+    sendSSE(res, { type: 'hello', clientId, participants: room.participants.size })
 
-    // initial hello
-    sendSSE(res, {
-      type: 'hello',
-      clientId,
-      participants: room.participants.size,
-      timestamp: nowMs(),
-    })
-
-    const heartbeat = setInterval(() => {
+    const hb = setInterval(() => {
       try { res.write(': ping\n\n') } catch {}
     }, 15000)
 
     req.on('close', () => {
-      clearInterval(heartbeat)
+      clearInterval(hb)
       room.clients.delete(res)
       if (room.participants.has(clientId)) {
         room.participants.delete(clientId)
@@ -193,55 +163,32 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
-  // Broadcast (video control + signaling relay)
+  // Broadcast event (load, pause, fullscreen, chat, and WebRTC signaling)
   if (pathname.startsWith('/api/rooms/') && pathname.endsWith('/broadcast') && req.method === 'POST') {
     const id = pathname.split('/')[3]
     const room = getOrCreateRoom(id)
-    const body = await parseBody(req)
-    const event = body || {}
+    const event = await parseBody(req)
 
-    // Update room playback state for late joiners
-    if (event.type === 'load' && event.video) {
+    // Persist video URL on load so late joiners see it
+    if (event?.type === 'load' && event.video) {
       room.video = event.video
-      room.state.currentTime = typeof event.time === 'number' ? event.time : 0
-      room.state.isPlaying = !!event.autoplay
-      room.state.updatedAt = nowMs()
-    } else if (event.type === 'play' && typeof event.time === 'number') {
-      room.state.isPlaying = true
-      room.state.currentTime = event.time
-      room.state.updatedAt = nowMs()
-    } else if (event.type === 'pause' && typeof event.time === 'number') {
-      room.state.isPlaying = false
-      room.state.currentTime = event.time
-      room.state.updatedAt = nowMs()
-    } else if (event.type === 'seek' && typeof event.time === 'number') {
-      room.state.currentTime = event.time
-      room.state.updatedAt = nowMs()
     }
-    // Signaling events (rtc-offer/rtc-answer/rtc-ice/presence/fullscreen) are just relayed
-
-    broadcast(room, event)
-    respondJSON(res, 200, { ok: true })
-    return
+    broadcast(room, event || {})
+    return respondJSON(res, 200, { ok: true })
   }
 
   // Room info
   if (pathname.startsWith('/api/rooms/') && pathname.endsWith('/info') && req.method === 'GET') {
     const id = pathname.split('/')[3]
     const room = getOrCreateRoom(id)
-    respondJSON(res, 200, {
+    return respondJSON(res, 200, {
       id: room.id,
       video: room.video,
-      state: {
-        isPlaying: room.state.isPlaying,
-        currentTime: computeCurrentTime(room),
-      },
       participants: Array.from(room.participants),
     })
-    return
   }
 
-  // Static files
+  // Static
   serveStatic(req, res)
 })
 
