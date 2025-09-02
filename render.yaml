@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: watch-together
+    env: node
+    plan: free
+    buildCommand: "npm install"
+    startCommand: "npm start"
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+    healthCheckPath: /
