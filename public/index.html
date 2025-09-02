@@ -1,1 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Watch Together</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="/styles.css" rel="stylesheet" />
+</head>
+<body>
+  <main class="container">
+    <header class="header">
+      <h1 class="title text-balance">Watch Together</h1>
+      <p class="subtitle">Create a room and watch YouTube or direct video links in sync. Max 4 people per room.</p>
+    </header>
 
+    <section class="card">
+      <h2>Create a Room</h2>
+      <button id="createBtn" class="btn">Create Room</button>
+      <p id="createResult" class="muted"></p>
+    </section>
+
+    <section class="card">
+      <h2>Join a Room</h2>
+      <div class="row">
+        <input id="joinId" class="input" placeholder="Enter room ID (e.g. abc123)" />
+        <button id="joinBtn" class="btn secondary">Join</button>
+      </div>
+      <p class="muted">If you received a share link, open it directly.</p>
+    </section>
+
+    <footer class="footer">YouTube and direct .mp4/.webm/.ogg supported. Netflix not supported.</footer>
+  </main>
+
+  <script src="/index.js"></script>
+</body>
+</html>
