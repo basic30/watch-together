@@ -399,7 +399,7 @@ async function joinRoom() {
     body: JSON.stringify({}),
   })
   if (res.status === 403 || res.status === 429) {
-    alert('Room is full (max 4 participants)')
+    alert('Room is full (max 6 participants)')
     window.location.href = '/'
     return
   }
