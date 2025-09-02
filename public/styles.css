@@ -75,11 +75,14 @@ body{
 .left{ flex: 2; min-width: 0; }
 .right{ flex: 1; min-width: 280px; }
 
-.player{ display: grid; }
+.player{ display: grid;
+       position: relative;
+  width: 100%;
+       }
 #ytPlayer, #filePlayer{
   width: 100%;
   max-width: 100%;
-  /* aspect-ratio: 16 / 9;*/
+  aspect-ratio: 16 / 9;
   background: #000;
   border-radius: 8px;
   overflow: hidden;
