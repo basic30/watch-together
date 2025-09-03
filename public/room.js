@@ -45,19 +45,6 @@ function isNetflix(url) {
   try { return new URL(url).hostname.includes('netflix.com') } catch { return false }
 }
 
-const emojiBtn = document.getElementById('emojiBtn')
-const emojiPicker = document.getElementById('emojiPicker')
-const chatInput = document.getElementById('chatInput')
-
-emojiBtn.addEventListener('click', () => {
-  emojiPicker.classList.toggle('hidden')
-})
-
-emojiPicker.addEventListener('emoji-click', (event) => {
-  chatInput.value += event.detail.unicode
-  emojiPicker.classList.add('hidden')
-})
-
 /* ---------- Parsers for common platforms ---------- */
 // YouTube existing
 function parseYouTubeId(urlStr) {
