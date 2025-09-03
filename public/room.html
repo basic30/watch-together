@@ -5,7 +5,6 @@
   <title>Room • Watch Together</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link href="/styles.css" rel="stylesheet" />
-  <script type="module" src="https://cdn.jsdelivr.net/npm/emoji-picker-element@^1/index.js"></script>
 </head>
 <body>
   <main class="container">
@@ -62,11 +61,9 @@
           <h2>Live Chat</h2>
           <div id="chatMessages" class="chat-messages" aria-live="polite" aria-label="Room messages"></div>
           <div class="chat-input-row">
-            <button id="emojiBtn">😊</button>
             <input id="chatInput" class="input" placeholder="Type a message..." maxlength="500" />
             <button id="chatSend" class="btn">Send</button>
           </div>
-          <emoji-picker id="emojiPicker" class="hidden"></emoji-picker>
         </section>
       </aside>
     </section>
